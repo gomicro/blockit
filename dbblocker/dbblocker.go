@@ -1,4 +1,4 @@
-package db
+package dbblocker
 
 import (
 	"database/sql"

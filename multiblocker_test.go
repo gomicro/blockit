@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/gomicro/blockit"
-	"github.com/gomicro/blockit/db"
+	"github.com/gomicro/blockit/dbblocker"
 
 	. "github.com/franela/goblin"
 	. "github.com/onsi/gomega"
@@ -36,7 +36,7 @@ func TestMultiBlocker(t *testing.T) {
 				mockDB, _, _ := sqlmock.New()
 
 				b := blockit.MultiBlocker{}
-				b.Add(db.New(mockDB))
+				b.Add(dbblocker.New(mockDB))
 				Eventually(<-b.Blockit()).Should(BeTrue())
 			})
 		})
