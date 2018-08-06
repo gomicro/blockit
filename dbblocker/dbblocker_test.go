@@ -1,9 +1,9 @@
-package db_test
+package dbblocker_test
 
 import (
 	"testing"
 
-	"github.com/gomicro/blockit/db"
+	"github.com/gomicro/blockit/dbblocker"
 
 	. "github.com/franela/goblin"
 	. "github.com/onsi/gomega"
@@ -18,7 +18,7 @@ func TestDefaultBlockers(t *testing.T) {
 		g.It("should block until connected to the db", func() {
 			mockDB, _, _ := sqlmock.New()
 
-			b := db.New(mockDB)
+			b := dbblocker.New(mockDB)
 			Eventually(<-b.Blockit()).Should(BeTrue())
 		})
 	})
