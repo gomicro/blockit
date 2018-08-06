@@ -1,5 +1,5 @@
 # Blockit
-[![Build Status](https://travis-ci.org/gomicro/blockit.svg)](https://travis-ci.org/gomicro/blockit)
+[![Build Status](https://travis-ci.com/gomicro/blockit.svg)](https://travis-ci.com/gomicro/blockit)
 [![Go Reportcard](https://goreportcard.com/badge/github.com/gomicro/blockit)](https://goreportcard.com/report/github.com/gomicro/blockit)
 [![GoDoc](https://godoc.org/github.com/gomicro/blockit?status.svg)](https://godoc.org/github.com/gomicro/blockit)
 [![License](https://img.shields.io/github/license/gomicro/blockit.svg)](https://github.com/gomicro/blockit/blob/master/LICENSE.md)
