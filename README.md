@@ -1,7 +1,7 @@
 # Blockit
-[![Build Status](https://travis-ci.com/gomicro/blockit.svg)](https://travis-ci.com/gomicro/blockit)
+[![GitHub Workflow Status (branch)](https://img.shields.io/github/workflow/status/gomicro/blockit/Build/master)](https://github.com/gomicro/blockit/actions?query=workflow%3ABuild)
 [![Go Reportcard](https://goreportcard.com/badge/github.com/gomicro/blockit)](https://goreportcard.com/report/github.com/gomicro/blockit)
-[![GoDoc](https://godoc.org/github.com/gomicro/blockit?status.svg)](https://godoc.org/github.com/gomicro/blockit)
+[![go.dev reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/gomicro/blockit)
 [![License](https://img.shields.io/github/license/gomicro/blockit.svg)](https://github.com/gomicro/blockit/blob/master/LICENSE.md)
 [![Release](https://img.shields.io/github/release/gomicro/blockit.svg)](https://github.com/gomicro/blockit/releases/latest)
 
