@@ -7,13 +7,13 @@ import (
 	"github.com/gomicro/blockit"
 	"github.com/gomicro/blockit/dbblocker"
 
-	. "github.com/franela/goblin"
+	"github.com/franela/goblin"
 	. "github.com/onsi/gomega"
 	"gopkg.in/DATA-DOG/go-sqlmock.v1"
 )
 
 func TestMultiBlocker(t *testing.T) {
-	g := Goblin(t)
+	g := goblin.Goblin(t)
 	RegisterFailHandler(func(m string, _ ...int) { g.Fail(m) })
 
 	g.Describe("MultiBlocker", func() {
