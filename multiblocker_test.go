@@ -1,6 +1,7 @@
 package blockit_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -20,14 +21,24 @@ func TestMultiBlocker(t *testing.T) {
 		g.Describe("Multiple Blockers", func() {
 			g.It("should block with several blockers", func() {
 				b := blockit.MultiBlocker{}
+				b.Add(&foo{})
+				b.Add(&bar{})
 
-				f := &foo{}
-				b.Add(f)
+				Eventually(b.Blockit()).Should(Receive())
+			})
 
-				ba := &bar{}
-				b.Add(ba)
+			g.It("should block until context is cancelled", func() {
+				ctx, cancel := context.WithCancel(context.Background())
 
-				Eventually(<-b.Blockit()).Should(BeTrue())
+				b := blockit.MultiBlocker{}
+				b.Add(&never{})
+
+				go func() {
+					<-time.After(1 * time.Millisecond)
+					cancel()
+				}()
+
+				Eventually(b.BlockitWithContext(ctx)).Should(Receive())
 			})
 		})
 
@@ -37,32 +48,68 @@ func TestMultiBlocker(t *testing.T) {
 
 				b := blockit.MultiBlocker{}
 				b.Add(dbblocker.New(mockDB))
-				Eventually(<-b.Blockit()).Should(BeTrue())
+
+				Eventually(b.Blockit()).Should(Receive())
 			})
 		})
 	})
 }
 
 type foo struct{}
-type bar struct{}
 
-func (f *foo) Blockit() <-chan bool {
-	out := make(chan bool)
+func (f *foo) Blockit() <-chan struct{} {
+	return f.BlockitWithContext(context.Background())
+}
+
+func (f *foo) BlockitWithContext(ctx context.Context) <-chan struct{} {
+	out := make(chan struct{})
 
 	go func() {
-		<-time.After(1 * time.Second)
-		close(out)
+		defer close(out)
+
+		<-time.After(10 * time.Millisecond)
 	}()
 
 	return out
 }
 
-func (b *bar) Blockit() <-chan bool {
-	out := make(chan bool)
+type bar struct{}
+
+func (b *bar) Blockit() <-chan struct{} {
+	return b.BlockitWithContext(context.Background())
+}
+
+func (b *bar) BlockitWithContext(ctx context.Context) <-chan struct{} {
+	out := make(chan struct{})
 
 	go func() {
-		<-time.After(3 * time.Second)
-		close(out)
+		defer close(out)
+
+		<-time.After(30 * time.Millisecond)
+	}()
+
+	return out
+}
+
+type never struct{}
+
+func (n *never) Blockit() <-chan struct{} {
+	return n.BlockitWithContext(context.Background())
+}
+
+func (n *never) BlockitWithContext(ctx context.Context) <-chan struct{} {
+	out := make(chan struct{})
+
+	go func() {
+		defer close(out)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
+		}
 	}()
 
 	return out

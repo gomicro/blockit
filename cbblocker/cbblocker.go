@@ -1,6 +1,7 @@
 package cbblocker
 
 import (
+	"context"
 	"time"
 )
 
@@ -16,10 +17,18 @@ func New(callback func() error, poll time.Duration) *Blocker {
 	}
 }
 
-func (g *Blocker) Blockit() <-chan bool {
-	pass := make(chan bool)
+func (g *Blocker) Blockit() <-chan struct{} {
+	return g.BlockitWithContext(context.Background())
+}
+
+func (g *Blocker) BlockitWithContext(ctx context.Context) <-chan struct{} {
+	ctxDone := ctx.Done()
+	out := make(chan struct{})
+	done := make(chan struct{})
 
 	go func() {
+		defer close(done)
+
 		for {
 			err := g.callback()
 			if err != nil {
@@ -27,12 +36,21 @@ func (g *Blocker) Blockit() <-chan bool {
 				continue
 			}
 
-			pass <- true
-			close(pass)
-
+			done <- struct{}{}
 			break
 		}
 	}()
 
-	return pass
+	go func() {
+		defer close(out)
+
+		select {
+		case <-ctxDone:
+		case <-done:
+		}
+
+		out <- struct{}{}
+	}()
+
+	return out
 }
