@@ -1,7 +1,9 @@
 package dbblocker_test
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/gomicro/blockit/dbblocker"
 
@@ -19,7 +21,20 @@ func TestDefaultBlockers(t *testing.T) {
 			mockDB, _, _ := sqlmock.New()
 
 			b := dbblocker.New(mockDB)
-			Eventually(<-b.Blockit()).Should(BeTrue())
+			Eventually(b.Blockit()).Should(Receive())
+		})
+
+		g.It("should block with context", func() {
+			mockDB, _, _ := sqlmock.New()
+			b := dbblocker.New(mockDB)
+			ctx, cancel := context.WithCancel(context.Background())
+
+			go func() {
+				<-time.After(2 * time.Millisecond)
+				cancel()
+			}()
+
+			Eventually(b.BlockitWithContext(ctx)).Should(Receive())
 		})
 	})
 }
