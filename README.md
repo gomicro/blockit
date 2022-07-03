@@ -10,9 +10,6 @@ Blockit provides an interface for establishing blockers where you do not wish to
 # Primary Use Case
 The reason this library exists is to allow for configuration of a service to proceed all the way to the point of standing up a status endpoint. It is intended to allow the service to configure itself asynchronously of its dependencies and not report healthy until those dependencies are all met. This is particularly useful with Docker and having the service start before its database, telemetry infrastructure, and logging infrastructure are in place.
 
-# Requirements
-Golang version 1.9 or higher
-
 # Installation
 
 ```
