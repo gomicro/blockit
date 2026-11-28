@@ -160,6 +160,36 @@ func TestDatabaseContextCancellation(t *testing.T) {
 	}
 }
 
+func TestDatabaseReceivesConstructorCancellationCause(t *testing.T) {
+	t.Parallel()
+
+	base, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	started := make(chan struct{})
+	causes := make(chan error, 1)
+	db := newDB(t, func(ctx context.Context) error {
+		close(started)
+		<-ctx.Done()
+		causes <- context.Cause(ctx)
+		return ctx.Err()
+	})
+	done := dbblocker.New(base, db).Blockit(context.Background())
+	waitSignal(t, started)
+
+	cause := errors.New("shared shutdown")
+	cancel(cause)
+	waitClosed(t, done)
+
+	select {
+	case got := <-causes:
+		if !errors.Is(got, cause) {
+			t.Errorf("ping cancellation cause = %v, want %v", got, cause)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("database ping did not report its cancellation cause")
+	}
+}
+
 func TestDatabaseAlreadyCanceled(t *testing.T) {
 	t.Parallel()
 
