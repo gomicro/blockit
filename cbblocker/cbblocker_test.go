@@ -2,62 +2,247 @@ package cbblocker_test
 
 import (
 	"context"
-	"fmt"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gomicro/blockit/cbblocker"
-
-	"github.com/franela/goblin"
-	. "github.com/onsi/gomega"
 )
 
-func TestCallbackBlockers(t *testing.T) {
-	g := goblin.Goblin(t)
-	RegisterFailHandler(func(m string, _ ...int) { g.Fail(m) })
+func waitClosed(t *testing.T, done <-chan struct{}) {
+	t.Helper()
 
-	g.Describe("Callback Blocking", func() {
-		g.It("should block until callback returns no error", func() {
-			ep := eventualPass{}
-
-			b := cbblocker.New(ep.do, 10*time.Millisecond)
-			Eventually(b.Blockit()).Should(Receive())
-			Expect(ep.Fails).To(Equal(4))
-		})
-
-		g.It("should block with context", func() {
-			n := never{}
-			b := cbblocker.New(n.do, 10*time.Millisecond)
-
-			ctx, cancel := context.WithCancel(context.Background())
-
-			go func() {
-				<-time.After(4 * time.Millisecond)
-				cancel()
-			}()
-
-			Eventually(b.BlockitWithContext(ctx)).Should(Receive())
-		})
-	})
+	select {
+	case _, ok := <-done:
+		if ok {
+			t.Error("completion sent a value instead of closing")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("completion did not close")
+	}
 }
 
-type eventualPass struct {
-	Fails int
+func waitSignal(t *testing.T, signal <-chan struct{}) {
+	t.Helper()
+
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatal("expected signal did not arrive")
+	}
 }
 
-func (ep *eventualPass) do() error {
-	if ep.Fails > 3 {
+func TestCallbackRetry(t *testing.T) {
+	t.Parallel()
+
+	var attempts int32
+	b := cbblocker.New(context.Background(), func(context.Context) error {
+		if atomic.AddInt32(&attempts, 1) < 3 {
+			return errors.New("not ready")
+		}
+
 		return nil
+	}, time.Millisecond)
+
+	waitClosed(t, b.Blockit(context.Background()))
+	if got := atomic.LoadInt32(&attempts); got != 3 {
+		t.Errorf("attempts = %d, want 3", got)
+	}
+}
+
+func TestCallbackCancellationStopsRetry(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{})
+	var attempts int32
+	b := cbblocker.New(context.Background(), func(context.Context) error {
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			close(started)
+		}
+
+		return errors.New("not ready")
+	}, time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := b.Blockit(ctx)
+	waitSignal(t, started)
+	cancel()
+	waitClosed(t, done)
+
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Errorf("attempts = %d, want 1", got)
+	}
+}
+
+func TestCallbackCancellationInterruptsContextAwareCallback(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name        string
+		constructor bool
+	}{
+		{name: "constructor", constructor: true},
+		{name: "call"},
+	} {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			base, cancelBase := context.WithCancel(context.Background())
+			defer cancelBase()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			started := make(chan struct{})
+			stopped := make(chan struct{})
+			b := cbblocker.New(base, func(ctx context.Context) error {
+				close(started)
+				<-ctx.Done()
+				close(stopped)
+				return ctx.Err()
+			}, time.Hour)
+
+			done := b.Blockit(ctx)
+			waitSignal(t, started)
+			if tt.constructor {
+				cancelBase()
+			} else {
+				cancel()
+			}
+			waitClosed(t, done)
+
+			select {
+			case <-stopped:
+			case <-time.After(time.Second):
+				t.Fatal("callback context was not canceled")
+			}
+		})
+	}
+}
+
+func TestCanceledCallbackDoesNotStart(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name        string
+		constructor bool
+	}{
+		{name: "constructor", constructor: true},
+		{name: "call"},
+	} {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			base, cancelBase := context.WithCancel(context.Background())
+			defer cancelBase()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tt.constructor {
+				cancelBase()
+			} else {
+				cancel()
+			}
+			var attempts int32
+			b := cbblocker.New(base, func(context.Context) error {
+				atomic.AddInt32(&attempts, 1)
+				return nil
+			}, time.Second)
+
+			waitClosed(t, b.Blockit(ctx))
+			if got := atomic.LoadInt32(&attempts); got != 0 {
+				t.Errorf("attempts = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestUncooperativeCallbackDoesNotBlockCancellation(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	stopped := make(chan struct{})
+	t.Cleanup(func() {
+		close(release)
+		waitSignal(t, stopped)
+	})
+	b := cbblocker.New(context.Background(), func(context.Context) error {
+		close(started)
+		<-release
+		close(stopped)
+		return errors.New("not ready")
+	}, time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := b.Blockit(ctx)
+	waitSignal(t, started)
+	cancel()
+	waitClosed(t, done)
+}
+
+func TestAbandonedCompletion(t *testing.T) {
+	t.Parallel()
+
+	called := make(chan struct{})
+	b := cbblocker.New(context.Background(), func(context.Context) error {
+		close(called)
+		return nil
+	}, time.Second)
+	done := b.Blockit(context.Background())
+
+	waitSignal(t, called)
+	waitClosed(t, done)
+}
+
+func TestCallbackContextCombinesValuesAndDeadlines(t *testing.T) {
+	t.Parallel()
+
+	type key string
+	base := context.WithValue(context.Background(), key("base"), "constructor")
+	base = context.WithValue(base, key("shared"), "constructor")
+	base, cancelBase := context.WithTimeout(base, time.Minute)
+	defer cancelBase()
+	ctx := context.WithValue(context.Background(), key("call"), "blocking call")
+	ctx = context.WithValue(ctx, key("shared"), "blocking call")
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	wantDeadline, hasDeadline := base.Deadline()
+	if !hasDeadline {
+		t.Fatal("constructor context has no deadline")
 	}
 
-	ep.Fails++
+	type observed struct {
+		base     any
+		call     any
+		shared   any
+		deadline time.Time
+		hasLimit bool
+	}
+	values := make(chan observed, 1)
+	b := cbblocker.New(base, func(ctx context.Context) error {
+		deadline, ok := ctx.Deadline()
+		values <- observed{
+			base:     ctx.Value(key("base")),
+			call:     ctx.Value(key("call")),
+			shared:   ctx.Value(key("shared")),
+			deadline: deadline,
+			hasLimit: ok,
+		}
+		return nil
+	}, time.Second)
 
-	return fmt.Errorf("didn't pass")
-}
-
-type never struct {
-}
-
-func (n *never) do() error {
-	return fmt.Errorf("will never pass")
+	waitClosed(t, b.Blockit(ctx))
+	got := <-values
+	if got.base != "constructor" || got.call != "blocking call" {
+		t.Errorf("context values = (%v, %v), want constructor and blocking call", got.base, got.call)
+	}
+	if got.shared != "blocking call" {
+		t.Errorf("shared context value = %v, want blocking call", got.shared)
+	}
+	if !got.hasLimit || !got.deadline.Equal(wantDeadline) {
+		t.Errorf("deadline = (%v, %v), want (%v, true)", got.deadline, got.hasLimit, wantDeadline)
+	}
 }
