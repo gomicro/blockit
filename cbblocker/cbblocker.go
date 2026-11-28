@@ -33,7 +33,7 @@ func (b *Blocker) Blockit(ctx context.Context) <-chan struct{} {
 		return out
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancelCause(ctx)
 	callbackCtx := mergedContext{Context: ctx, base: b.ctx}
 	done := make(chan struct{})
 
@@ -65,12 +65,16 @@ func (b *Blocker) Blockit(ctx context.Context) <-chan struct{} {
 
 	go func() {
 		defer close(out)
-		defer cancel()
+		defer cancel(nil)
 
 		select {
 		case <-ctx.Done():
 		case <-b.ctx.Done():
+			cancel(context.Cause(b.ctx))
 		case <-done:
+			if b.ctx.Err() != nil {
+				cancel(context.Cause(b.ctx))
+			}
 		}
 	}()
 
