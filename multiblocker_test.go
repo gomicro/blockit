@@ -2,115 +2,145 @@ package blockit_test
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gomicro/blockit"
-	"github.com/gomicro/blockit/dbblocker"
-
-	"github.com/franela/goblin"
-	. "github.com/onsi/gomega"
-	"gopkg.in/DATA-DOG/go-sqlmock.v1"
+	"github.com/gomicro/blockit/cbblocker"
 )
 
-func TestMultiBlocker(t *testing.T) {
-	g := goblin.Goblin(t)
-	RegisterFailHandler(func(m string, _ ...int) { g.Fail(m) })
-
-	g.Describe("MultiBlocker", func() {
-		g.Describe("Multiple Blockers", func() {
-			g.It("should block with several blockers", func() {
-				b := blockit.MultiBlocker{}
-				b.Add(&foo{})
-				b.Add(&bar{})
-
-				Eventually(b.Blockit()).Should(Receive())
-			})
-
-			g.It("should block until context is cancelled", func() {
-				ctx, cancel := context.WithCancel(context.Background())
-
-				b := blockit.MultiBlocker{}
-				b.Add(&never{})
-
-				go func() {
-					<-time.After(1 * time.Millisecond)
-					cancel()
-				}()
-
-				Eventually(b.BlockitWithContext(ctx)).Should(Receive())
-			})
-		})
-
-		g.Describe("DB Blocker", func() {
-			g.It("should work in a multiblocker", func() {
-				mockDB, _, _ := sqlmock.New()
-
-				b := blockit.MultiBlocker{}
-				b.Add(dbblocker.New(mockDB))
-
-				Eventually(b.Blockit()).Should(Receive())
-			})
-		})
-	})
+type testBlocker struct {
+	done    <-chan struct{}
+	started chan struct{}
+	calls   int32
 }
 
-type foo struct{}
+func (b *testBlocker) Blockit(context.Context) <-chan struct{} {
+	atomic.AddInt32(&b.calls, 1)
+	if b.started != nil {
+		close(b.started)
+	}
 
-func (f *foo) Blockit() <-chan struct{} {
-	return f.BlockitWithContext(context.Background())
+	return b.done
 }
 
-func (f *foo) BlockitWithContext(ctx context.Context) <-chan struct{} {
-	out := make(chan struct{})
+func waitClosed(t *testing.T, done <-chan struct{}) {
+	t.Helper()
 
-	go func() {
-		defer close(out)
-
-		<-time.After(10 * time.Millisecond)
-	}()
-
-	return out
-}
-
-type bar struct{}
-
-func (b *bar) Blockit() <-chan struct{} {
-	return b.BlockitWithContext(context.Background())
-}
-
-func (b *bar) BlockitWithContext(ctx context.Context) <-chan struct{} {
-	out := make(chan struct{})
-
-	go func() {
-		defer close(out)
-
-		<-time.After(30 * time.Millisecond)
-	}()
-
-	return out
-}
-
-type never struct{}
-
-func (n *never) Blockit() <-chan struct{} {
-	return n.BlockitWithContext(context.Background())
-}
-
-func (n *never) BlockitWithContext(ctx context.Context) <-chan struct{} {
-	out := make(chan struct{})
-
-	go func() {
-		defer close(out)
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(2 * time.Second):
-			}
+	select {
+	case _, ok := <-done:
+		if ok {
+			t.Error("completion sent a value instead of closing")
 		}
-	}()
+	case <-time.After(time.Second):
+		t.Fatal("completion did not close")
+	}
+}
 
-	return out
+func waitSignal(t *testing.T, signal <-chan struct{}) {
+	t.Helper()
+
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatal("child did not start")
+	}
+}
+
+func TestMultiBlockerWaitsForAll(t *testing.T) {
+	t.Parallel()
+
+	first := make(chan struct{})
+	second := make(chan struct{})
+	startedFirst := make(chan struct{})
+	startedSecond := make(chan struct{})
+	b := blockit.MultiBlocker{}
+	b.Add(&testBlocker{done: first, started: startedFirst}, &testBlocker{done: second, started: startedSecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := b.Blockit(ctx)
+	waitSignal(t, startedFirst)
+	waitSignal(t, startedSecond)
+	close(first)
+
+	select {
+	case <-done:
+		t.Fatal("completion closed before all children finished")
+	default:
+	}
+	close(second)
+	waitClosed(t, done)
+}
+
+func TestMultiBlockerCancellation(t *testing.T) {
+	t.Parallel()
+
+	child := make(chan struct{})
+	defer close(child)
+	started := make(chan struct{})
+	b := blockit.MultiBlocker{}
+	b.Add(&testBlocker{done: child, started: started})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := b.Blockit(ctx)
+	waitSignal(t, started)
+	cancel()
+	waitClosed(t, done)
+}
+
+func TestMultiBlockerAlreadyCanceled(t *testing.T) {
+	t.Parallel()
+
+	child := &testBlocker{done: make(chan struct{})}
+	b := blockit.MultiBlocker{}
+	b.Add(child)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	waitClosed(t, b.Blockit(ctx))
+	if got := atomic.LoadInt32(&child.calls); got != 0 {
+		t.Errorf("child calls = %d, want 0", got)
+	}
+}
+
+func TestMultiBlockerPropagatesContext(t *testing.T) {
+	t.Parallel()
+
+	type key struct{}
+	ctx := context.WithValue(context.Background(), key{}, "value")
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	values := make(chan any, 1)
+	stopped := make(chan struct{})
+	child := cbblocker.New(context.Background(), func(ctx context.Context) error {
+		values <- ctx.Value(key{})
+		<-ctx.Done()
+		close(stopped)
+		return ctx.Err()
+	}, time.Second)
+	var b blockit.MultiBlocker
+	b.Add(child)
+	done := b.Blockit(ctx)
+
+	select {
+	case value := <-values:
+		if value != "value" {
+			t.Errorf("child context value = %v, want value", value)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("child did not receive context")
+	}
+
+	cancel()
+	waitClosed(t, done)
+	waitSignal(t, stopped)
+}
+
+func TestMultiBlockerEmpty(t *testing.T) {
+	t.Parallel()
+
+	b := blockit.MultiBlocker{}
+	waitClosed(t, b.Blockit(context.Background()))
 }

@@ -1,12 +1,8 @@
 package blockit
 
-import (
-	"context"
-)
+import "context"
 
-// Blocker represents an object that will have a Blockit function as a method
-// for determining when the object is done with a given task.
+// Blocker signals completion by closing its channel without sending a value.
 type Blocker interface {
-	Blockit() <-chan struct{}
-	BlockitWithContext(ctx context.Context) <-chan struct{}
+	Blockit(ctx context.Context) <-chan struct{}
 }
