@@ -2,6 +2,7 @@ package blockit_test
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,15 +12,18 @@ import (
 )
 
 type testBlocker struct {
-	done    <-chan struct{}
-	started chan struct{}
-	calls   int32
+	done        <-chan struct{}
+	started     chan struct{}
+	startedOnce sync.Once
+	calls       int32
 }
 
 func (b *testBlocker) Blockit(context.Context) <-chan struct{} {
 	atomic.AddInt32(&b.calls, 1)
 	if b.started != nil {
-		close(b.started)
+		b.startedOnce.Do(func() {
+			close(b.started)
+		})
 	}
 
 	return b.done
@@ -143,4 +147,68 @@ func TestMultiBlockerEmpty(t *testing.T) {
 
 	b := blockit.MultiBlocker{}
 	waitClosed(t, b.Blockit(context.Background()))
+}
+
+func TestMultiBlockerUsesIndependentSnapshots(t *testing.T) {
+	t.Parallel()
+
+	first := make(chan struct{})
+	added := make(chan struct{})
+	addedStarted := make(chan struct{})
+	addedBlocker := &testBlocker{done: added, started: addedStarted}
+	var b blockit.MultiBlocker
+	b.Add(&testBlocker{done: first})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	firstCall := b.Blockit(ctx)
+	b.Add(addedBlocker)
+	secondCall := b.Blockit(ctx)
+	waitSignal(t, addedStarted)
+	close(first)
+	waitClosed(t, firstCall)
+
+	select {
+	case <-secondCall:
+		t.Fatal("second call completed before the added blocker")
+	default:
+	}
+
+	close(added)
+	waitClosed(t, secondCall)
+	if got := atomic.LoadInt32(&addedBlocker.calls); got != 1 {
+		t.Errorf("added blocker calls = %d, want 1", got)
+	}
+}
+
+func TestMultiBlockerConcurrentAddAndBlockit(t *testing.T) {
+	t.Parallel()
+
+	childDone := make(chan struct{})
+	close(childDone)
+	child := &testBlocker{done: childDone}
+	var b blockit.MultiBlocker
+	b.Add(child)
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	workers.Add(2)
+
+	go func() {
+		defer workers.Done()
+		<-start
+		for i := 0; i < 200; i++ {
+			b.Add(child)
+		}
+	}()
+
+	go func() {
+		defer workers.Done()
+		<-start
+		for i := 0; i < 200; i++ {
+			<-b.Blockit(context.Background())
+		}
+	}()
+
+	close(start)
+	workers.Wait()
 }
