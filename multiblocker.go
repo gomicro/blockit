@@ -1,50 +1,46 @@
 package blockit
 
-import (
-	"context"
-)
+import "context"
 
-// MultiBlocker represent many blockers to monitor and determine when they are
-// done.
+// MultiBlocker completes when all its blockers complete.
 type MultiBlocker struct {
 	blockers []Blocker
 }
 
-// Add takes one to many blockers to append into the multiblocker
+// Add appends blockers to monitor.
 func (b *MultiBlocker) Add(blocker ...Blocker) {
 	b.blockers = append(b.blockers, blocker...)
 }
 
-// Blockit meets the blocker interface and summarizes multiple blockers into a
-// single channel for blocking on.
-func (b *MultiBlocker) Blockit() <-chan struct{} {
-	return b.BlockitWithContext(context.Background())
-}
-
-// BlockitWithContext takes a context to include with the blockers. The
-// multiblocker will return if the context is cancelled before the blockers
-// finish.
-func (b *MultiBlocker) BlockitWithContext(ctx context.Context) <-chan struct{} {
+// Blockit closes its completion channel when all blockers complete
+// or ctx is canceled. It sends no value on the channel. Child blocker methods
+// must return their channels promptly, and their own work must honor ctx to stop.
+func (b *MultiBlocker) Blockit(ctx context.Context) <-chan struct{} {
 	out := make(chan struct{})
-
-	dones := make([]chan struct{}, len(b.blockers))
-	for i := range dones {
-		dones[i] = make(chan struct{})
-	}
-
-	for i := range b.blockers {
-		go func(j int) {
-			dones[j] <- <-b.blockers[j].BlockitWithContext(ctx)
-		}(i)
+	if ctx.Err() != nil {
+		close(out)
+		return out
 	}
 
 	go func() {
-		for i := range dones {
-			<-dones[i]
+		defer close(out)
+
+		dones := make([]<-chan struct{}, 0, len(b.blockers))
+		for _, blocker := range b.blockers {
+			if ctx.Err() != nil {
+				return
+			}
+
+			dones = append(dones, blocker.Blockit(ctx))
 		}
 
-		out <- struct{}{}
-		close(out)
+		for _, done := range dones {
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+			}
+		}
 	}()
 
 	return out
