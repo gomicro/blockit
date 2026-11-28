@@ -121,6 +121,109 @@ func TestCallbackCancellationInterruptsContextAwareCallback(t *testing.T) {
 	}
 }
 
+func TestCallbackReceivesCancellationCause(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name        string
+		constructor bool
+	}{
+		{name: "constructor", constructor: true},
+		{name: "call"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			base, cancelBase := context.WithCancelCause(context.Background())
+			defer cancelBase(nil)
+			ctx, cancel := context.WithCancelCause(context.Background())
+			defer cancel(nil)
+			started := make(chan struct{})
+			causes := make(chan error, 1)
+			b := cbblocker.New(base, func(ctx context.Context) error {
+				close(started)
+				<-ctx.Done()
+				causes <- context.Cause(ctx)
+				return ctx.Err()
+			}, time.Hour)
+
+			done := b.Blockit(ctx)
+			waitSignal(t, started)
+			cause := errors.New("shutdown requested")
+			if tt.constructor {
+				cancelBase(cause)
+			} else {
+				cancel(cause)
+			}
+			waitClosed(t, done)
+
+			select {
+			case got := <-causes:
+				if !errors.Is(got, cause) {
+					t.Errorf("cancellation cause = %v, want %v", got, cause)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("callback did not report its cancellation cause")
+			}
+		})
+	}
+}
+
+func TestCallbackCauseWhenPollingStopsOnConstructorCancellation(t *testing.T) {
+	t.Parallel()
+
+	base, cancelBase := context.WithCancelCause(context.Background())
+	defer cancelBase(nil)
+	started := make(chan struct{})
+	contexts := make(chan context.Context, 1)
+	b := cbblocker.New(base, func(ctx context.Context) error {
+		contexts <- ctx
+		close(started)
+		<-base.Done()
+		return base.Err()
+	}, time.Hour)
+
+	done := b.Blockit(context.Background())
+	waitSignal(t, started)
+	cause := errors.New("shared shutdown")
+	cancelBase(cause)
+	waitClosed(t, done)
+
+	callbackCtx := <-contexts
+	if got := context.Cause(callbackCtx); !errors.Is(got, cause) {
+		t.Errorf("cancellation cause = %v, want %v", got, cause)
+	}
+}
+
+func TestCallbackReceivesConstructorDeadlineCause(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("shared deadline")
+	base, cancel := context.WithTimeoutCause(context.Background(), 250*time.Millisecond, cause)
+	defer cancel()
+	started := make(chan struct{})
+	causes := make(chan error, 1)
+	b := cbblocker.New(base, func(ctx context.Context) error {
+		close(started)
+		<-ctx.Done()
+		causes <- context.Cause(ctx)
+		return ctx.Err()
+	}, time.Hour)
+
+	done := b.Blockit(context.Background())
+	waitSignal(t, started)
+	waitClosed(t, done)
+
+	select {
+	case got := <-causes:
+		if !errors.Is(got, cause) {
+			t.Errorf("deadline cause = %v, want %v", got, cause)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("callback did not report its deadline cause")
+	}
+}
+
 func TestCanceledCallbackDoesNotStart(t *testing.T) {
 	t.Parallel()
 
